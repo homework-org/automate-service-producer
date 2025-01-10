@@ -1,0 +1,75 @@
+plugins {
+    id 'application'
+    id 'org.springframework.boot' version '3.4.1'
+    id 'io.spring.dependency-management' version '1.1.6'
+    id 'com.bmuschko.docker-spring-boot-application' version '9.4.0'
+}
+
+group = 'br.com.home'
+version = '1.0'
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+ext {
+    set('springCloudVersion', "2024.0.0")
+}
+
+application {
+    applicationDefaultJvmArgs = ['-Dspring.profiles.active=dev']
+}
+
+repositories {
+    mavenLocal()
+    maven {
+        url = uri('https://repo.maven.apache.org/maven2/')
+    }
+}
+
+dependencies {
+    implementation libs.org.springframework.boot.spring.boot.starter.web
+    implementation libs.org.springframework.boot.spring.boot.starter.actuator
+    implementation libs.org.springframework.kafka.spring.kafka
+    implementation libs.org.apache.kafka.kafka.streams
+    implementation libs.com.fasterxml.jackson.datatype.jackson.datatype.jsr310
+
+    implementation 'jakarta.validation:jakarta.validation-api:3.1.0'
+    implementation 'org.springframework.boot:spring-boot-starter-validation:3.4.1'
+
+    runtimeOnly libs.org.springframework.boot.spring.boot.devtools
+    testImplementation libs.org.springframework.boot.spring.boot.starter.test
+}
+
+dependencyManagement {
+    imports {
+        mavenBom "org.springframework.cloud:spring-cloud-dependencies:${springCloudVersion}"
+    }
+}
+
+tasks.named('test') {
+    useJUnitPlatform()
+}
+
+docker {
+    springBootApplication {
+        baseImage = 'openjdk:21'
+        ports = [8080]
+        images = ['durlag/automate-service-producer']
+        jvmArgs = ['-Dspring.profiles.active=prod', '-Xmx256m']
+    }
+}
+
+import com.bmuschko.gradle.docker.tasks.container.DockerCreateContainer
+import com.github.dockerjava.api.model.RestartPolicy
+
+task createContainer(type: DockerCreateContainer) {
+    dependsOn
+    containerName = "automate-service-producer"
+    targetImageId dockerBuildImage.getImageId()
+    hostConfig.portBindings = ['8080:8080']
+    hostConfig.autoRemove = false
+    hostConfig.restartPolicy = RestartPolicy.alwaysRestart().toString()
+}

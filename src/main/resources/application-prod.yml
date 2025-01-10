@@ -1,0 +1,24 @@
+logging:
+  pattern:
+    console: '%msg%n'
+    file: '%msg%n'
+
+server:
+  port: 8080
+
+spring:
+  kafka:
+    bootstrap-servers: kafka.home.lab:9092, 192.168.1.215:9092
+    properties[spring.kafka.bootstrap-servers]: kafka.home.lab:9092, 192.168.1.215:9092
+    topic: automate-events-prod
+
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+      retries: 5
+      acks: all
+      linger-ms: 20
+      batch-size: 32768
+
+  main:
+    allow-bean-definition-overriding: true
