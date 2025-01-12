@@ -15,16 +15,12 @@ através de dispositivos sonoff ou compatíveis.
 
   Body:
   ```
-  msg.headers = {
-      "content-type": "application/json"
-  }
-
-  msg.payload = {
-     "id": <Message ID>,
-     "entityId": <HA Entity ID>,
-     "eventType": <HA Event Type>,
-     "timeFired": <HA TimeStamp on fired>,
-     "device": <HA Device>
+  {
+     "id": "<Message ID>",
+     "entityId": "<HA Entity ID>",
+     "eventType": "<HA Event Type>",
+     "timeFired": "<HA TimeStamp on fired>",
+     "device": "<HA Device>"
   }
   ```
 
