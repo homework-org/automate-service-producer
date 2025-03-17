@@ -3,6 +3,7 @@ plugins {
     id 'org.springframework.boot' version '3.4.1'
     id 'io.spring.dependency-management' version '1.1.6'
     id 'com.bmuschko.docker-spring-boot-application' version '9.4.0'
+    id 'com.github.davidmc24.gradle.plugin.avro' version '1.9.1'
 }
 
 group = 'br.com.home'
@@ -18,15 +19,12 @@ ext {
     set('springCloudVersion', "2024.0.0")
 }
 
-application {
-    applicationDefaultJvmArgs = ['-Dspring.profiles.active=dev']
-}
-
 repositories {
     mavenLocal()
-    maven {
-        url = uri('https://repo.maven.apache.org/maven2/')
-    }
+    mavenCentral()
+
+    maven {url = 'https://repo.maven.apache.org/maven2' }
+    maven {url = 'https://packages.confluent.io/maven' }
 }
 
 dependencies {
@@ -38,6 +36,10 @@ dependencies {
 
     implementation 'jakarta.validation:jakarta.validation-api:3.1.0'
     implementation 'org.springframework.boot:spring-boot-starter-validation:3.4.1'
+    implementation 'org.apache.avro:avro:1.12.0'
+    implementation 'io.confluent:kafka-avro-serializer:7.8.0'
+
+    implementation(project(":commons"))
 
     runtimeOnly libs.org.springframework.boot.spring.boot.devtools
     testImplementation libs.org.springframework.boot.spring.boot.starter.test
@@ -57,7 +59,7 @@ docker {
     springBootApplication {
         baseImage = 'openjdk:21'
         ports = [8080]
-        images = ['durlag/automate-service-producer']
+        images = ['registry.home.lab:5000/automate-service-producer']
         jvmArgs = ['-Dspring.profiles.active=prod', '-Xmx256m']
     }
 }
@@ -72,4 +74,11 @@ task createContainer(type: DockerCreateContainer) {
     hostConfig.portBindings = ['8080:8080']
     hostConfig.autoRemove = false
     hostConfig.restartPolicy = RestartPolicy.alwaysRestart().toString()
+}
+
+import com.github.davidmc24.gradle.plugin.avro.GenerateAvroJavaTask
+
+def generateAvro = tasks.register("generateAvro", GenerateAvroJavaTask) {
+    source("src/main/resources/avro")
+    outputDir = file("src/main/java")
 }

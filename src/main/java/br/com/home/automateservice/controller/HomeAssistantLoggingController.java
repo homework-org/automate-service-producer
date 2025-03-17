@@ -1,6 +1,8 @@
 package br.com.home.automateservice.controller;
 
+import br.com.home.automateservice.dto.HomeAssistantAvroEvent;
 import br.com.home.automateservice.dto.HomeAssistantEvent;
+import br.com.home.automateservice.dto.HomeAssistantEventMapper;
 import br.com.home.automateservice.service.HomeAssistantLoggingService;
 import jakarta.validation.Valid;
 import org.springframework.http.ResponseEntity;
@@ -18,10 +20,10 @@ public class HomeAssistantLoggingController {
     }
 
     @PostMapping("/logging")
-    public ResponseEntity<HomeAssistantEvent> sendEvent(@RequestBody @Valid HomeAssistantEvent event) {
+    public ResponseEntity<HomeAssistantEvent> sendEvent(@RequestBody @Valid HomeAssistantEvent homeAssistantEvent) {
 
-        var saved = homeAssistantLoggingService.push(event);
+        homeAssistantLoggingService.push(homeAssistantEvent);
 
-        return ResponseEntity.ok(saved);
+        return ResponseEntity.ok(homeAssistantEvent);
     }
 }

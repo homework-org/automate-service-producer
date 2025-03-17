@@ -11,9 +11,9 @@ server:
 
 spring:
   kafka:
-    bootstrap-servers: 192.168.1.211:9092, kafka-bootstrap.home.lab:9092
-    properties[spring.kafka.bootstrap-servers]: 192.168.1.211:9092, kafka-bootstrap.home.lab:9092
-    topic: automate-events-prod
+    bootstrap-servers: kafka-bootstrap.home.lab:9092, 192.168.1.211:9092
+    properties[spring.kafka.bootstrap-servers]: kafka-bootstrap.home.lab:9092, 192.168.1.211:9092
+    topic: automate-events-dev
 
     producer:
       compression-type: lz4
@@ -31,6 +31,5 @@ spring:
         auto:
           register:
             schemas: true
-
   main:
     allow-bean-definition-overriding: true

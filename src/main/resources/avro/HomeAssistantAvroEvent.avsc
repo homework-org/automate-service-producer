@@ -1,0 +1,11 @@
+{"namespace": "br.com.home.automateservice.dto",
+  "type": "record",
+  "name": "HomeAssistantAvroEvent",
+  "fields": [
+    {"name": "id", "type": "string"},
+    {"name": "timeFired",  "type": "string"},
+    {"name": "device",  "type": "string"},
+    {"name": "eventType",  "type": "string"},
+    {"name": "entityId",  "type": "string"}
+  ]
+}
