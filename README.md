@@ -5,8 +5,9 @@ de registrar eventos recebidos via automação residencial, via Node-RED no Home
 através de dispositivos sonoff ou compatíveis.
 
 * Desenvolvido em Spring sob o java 21
-* Depende de uma infraestrutura com Kafka e MongoDB já operando
+* Depende de uma infraestrutura com Redis, Kafka e MongoDB já operando
 * Os eventos são alimentados em um tópico no Kafka para posteriormente serem consumidos.
+* Caso o evento não possa ser enviado ao Kafka, será salvo no redis em uma fila com TTL de 24h
 
 **Método de uso:**
 

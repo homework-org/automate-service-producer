@@ -21,9 +21,9 @@ spring:
       value-serializer: io.confluent.kafka.serializers.KafkaAvroSerializer
       acks: all
       batch-size: 16384
+      retries: 3
       linger-ms: 5
-      request-timeout-ms: 60000
-      retries: 5
+      request-timeout-ms: 15000
       properties:
         schema:
           registry:
@@ -31,5 +31,9 @@ spring:
         auto:
           register:
             schemas: true
+  redis:
+    redisson:
+      file: classpath:redisson.yml
+
   main:
     allow-bean-definition-overriding: true
