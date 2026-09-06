@@ -19,6 +19,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.argThat;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
 import static org.mockito.Mockito.when;
@@ -40,32 +41,43 @@ class HomeAssistantLoggingServiceTest {
             "hall", "state_changed", "sensor.temperature");
 
     @Test
-    void doesNotFallBackToRedisWhenKafkaSendSucceeds() {
+    void publishesWithoutTouchingRedisWhenTheKafkaSendSucceeds() {
         when(kafkaService.send(event)).thenReturn(CompletableFuture.completedFuture(sendResult()));
 
-        service.push(event);
+        CompletableFuture<PublishOutcome> result = service.push(event);
 
+        assertThat(result.getNow(null)).isEqualTo(PublishOutcome.PUBLISHED);
         verifyNoInteractions(redisService);
     }
 
     @Test
-    void enqueuesOnRedisWhenTheKafkaFutureFailsAsynchronously() {
+    void fallsBackToRedisWhenTheKafkaFutureFailsAsynchronously() {
         CompletableFuture<SendResult<String, Object>> failed = new CompletableFuture<>();
         failed.completeExceptionally(new RuntimeException("broker unavailable"));
         when(kafkaService.send(event)).thenReturn(failed);
 
-        service.push(event);
+        CompletableFuture<PublishOutcome> result = service.push(event);
 
+        assertThat(result.getNow(null)).isEqualTo(PublishOutcome.FELL_BACK);
         verify(redisService).enqueueForRetry(argThat(e -> e.event().equals(event) && e.attempts() == 0));
     }
 
     @Test
-    void enqueuesOnRedisWhenTheKafkaSendFailsSynchronously() {
+    void fallsBackToRedisWhenTheKafkaSendFailsSynchronously() {
         when(kafkaService.send(event)).thenThrow(new RuntimeException("schema registry down"));
 
-        assertThatCode(() -> service.push(event)).doesNotThrowAnyException();
+        CompletableFuture<PublishOutcome> result = service.push(event);
 
+        assertThat(result).isCompletedWithValue(PublishOutcome.FELL_BACK);
         verify(redisService).enqueueForRetry(argThat(e -> e.event().equals(event) && e.attempts() == 0));
+    }
+
+    @Test
+    void neverPropagatesWhenBothTheKafkaSendAndTheRedisFallbackFail() {
+        when(kafkaService.send(event)).thenThrow(new RuntimeException("schema registry down"));
+        doThrow(new RuntimeException("redis down")).when(redisService).enqueueForRetry(any());
+
+        assertThatCode(() -> service.push(event)).doesNotThrowAnyException();
     }
 
     @Test
@@ -80,7 +92,6 @@ class HomeAssistantLoggingServiceTest {
         ArgumentCaptor<FallbackEnvelope> captor = ArgumentCaptor.forClass(FallbackEnvelope.class);
         verify(redisService).enqueueForRetry(captor.capture());
         assertThat(captor.getValue()).isSameAs(drained);
-        assertThat(captor.getValue().event()).isSameAs(event);
     }
 
     private static SendResult<String, Object> sendResult() {

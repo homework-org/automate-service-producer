@@ -11,6 +11,9 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
+import java.util.Deque;
+import java.util.concurrent.ConcurrentLinkedDeque;
+
 /**
  * Fila de fallback do Redis para eventos que não puderam ser publicados no Kafka.
  * A fila é limitada em três dimensões (ver {@link RedisFallbackProperties}): número
@@ -25,12 +28,21 @@ public class RedisService {
     public static final String RETRY_QUEUE_NAME = "home-assistant-events";
     public static final String DEAD_LETTER_QUEUE_NAME = "home-assistant-events:dlq";
 
+    /**
+     * Rede de segurança em memória para quando o próprio Redis está indisponível no
+     * momento de devolver um evento à fila. Cobre blips curtos; é perdida se o
+     * processo morrer, então é mitigação, não garantia.
+     */
+    private static final int LOCAL_BUFFER_LIMIT = 1000;
+
     private final RQueue<FallbackEnvelope> retryQueue;
     private final RQueue<FallbackEnvelope> deadLetterQueue;
     private final RedisFallbackProperties properties;
+    private final Deque<FallbackEnvelope> localBuffer = new ConcurrentLinkedDeque<>();
 
     private final Counter enqueued;
     private final Counter deadLettered;
+    private final Counter enqueueFailed;
 
     public RedisService(RedissonClient redissonClient, RedisFallbackProperties properties, MeterRegistry meterRegistry) {
         JsonJacksonCodec codec = new JsonJacksonCodec();
@@ -40,18 +52,21 @@ public class RedisService {
 
         this.enqueued = meterRegistry.counter("fallback.enqueued");
         this.deadLettered = meterRegistry.counter("fallback.dead_letter");
+        this.enqueueFailed = meterRegistry.counter("fallback.enqueue_failed");
         Gauge.builder("fallback.queue.depth", retryQueue, RQueue::size)
                 .description("Eventos aguardando reenvio ao Kafka na fila de fallback do Redis")
                 .register(meterRegistry);
         Gauge.builder("fallback.dlq.depth", deadLetterQueue, RQueue::size)
                 .description("Eventos descartados para a dead-letter queue")
                 .register(meterRegistry);
+        Gauge.builder("fallback.local_buffer.depth", localBuffer, Deque::size)
+                .description("Eventos retidos em memória porque o Redis estava indisponível na devolução")
+                .register(meterRegistry);
     }
 
     /**
-     * Registra a falha de reenvio de um evento e o reenfileira, a menos que algum
-     * limite tenha sido atingido - caso em que ele vai para a dead-letter queue.
-     * Ordem de verificação:
+     * Registra a falha de reenvio de um evento e o devolve à fila - ou à DLQ, se
+     * algum limite foi atingido, nesta ordem:
      * <ol>
      *   <li>tentativas &gt; {@code app.redis.fallback.max-attempts};</li>
      *   <li>idade desde a 1ª falha &gt; {@code app.redis.fallback.retention};</li>
@@ -59,36 +74,80 @@ public class RedisService {
      *       preservando o backlog FIFO já enfileirado.</li>
      * </ol>
      * A key da fila recebe TTL igual à retenção a cada escrita, então uma fila
-     * ociosa (serviço parado, backlog abandonado) é coletada automaticamente.
+     * ociosa é coletada automaticamente. <strong>Nunca lança:</strong> se o Redis
+     * estiver indisponível o evento é retido em memória e reinserido numa chamada
+     * futura (ou descartado, com log e métrica, se o buffer local encher).
      */
     public void enqueueForRetry(FallbackEnvelope envelope) {
-        FallbackEnvelope next = envelope.withFailure();
+        flushLocalBuffer();
+        persist(envelope.withFailure());
+    }
 
-        if (next.attempts() > properties.maxAttempts()) {
-            deadLetter(next, "MAX_ATTEMPTS");
+    /**
+     * Retira o próximo envelope da fila de retry, ou {@code null} se ela estiver
+     * vazia ou o Redis indisponível. Aproveita para reinserir o que ficou no
+     * buffer local enquanto o Redis esteve fora.
+     */
+    public FallbackEnvelope pollForRetry() {
+        try {
+            flushLocalBuffer();
+            FallbackEnvelope polled = retryQueue.poll();
+            if (polled != null) {
+                logger.debug("POLL - retirado da fila de fallback {} (tentativas={})", polled.event(), polled.attempts());
+            }
+            return polled;
+        } catch (RuntimeException redisDown) {
+            logger.warn("POLL_FAILED - Redis indisponível na drenagem: {}", redisDown.getMessage());
+            return null;
+        }
+    }
+
+    private void persist(FallbackEnvelope incremented) {
+        try {
+            persistToRedis(incremented);
+        } catch (RuntimeException redisDown) {
+            bufferLocally(incremented, redisDown);
+        }
+    }
+
+    private void persistToRedis(FallbackEnvelope envelope) {
+        if (envelope.attempts() > properties.maxAttempts()) {
+            deadLetter(envelope, "MAX_ATTEMPTS");
             return;
         }
-        if (next.olderThan(properties.retention())) {
-            deadLetter(next, "RETENTION_EXCEEDED");
+        if (envelope.olderThan(properties.retention())) {
+            deadLetter(envelope, "RETENTION_EXCEEDED");
             return;
         }
         if (retryQueue.size() >= properties.maxQueueSize()) {
-            deadLetter(next, "QUEUE_FULL");
+            deadLetter(envelope, "QUEUE_FULL");
             return;
         }
-
-        retryQueue.offer(next);
+        retryQueue.offer(envelope);
         retryQueue.expire(properties.retention());
         enqueued.increment();
     }
 
-    /** Retira o próximo envelope da fila de retry, ou {@code null} se ela estiver vazia. */
-    public FallbackEnvelope pollForRetry() {
-        FallbackEnvelope polled = retryQueue.poll();
-        if (polled != null) {
-            logger.info("POLL - retirado da fila de fallback {} (tentativas={})", polled.event(), polled.attempts());
+    private void flushLocalBuffer() {
+        for (FallbackEnvelope buffered = localBuffer.poll(); buffered != null; buffered = localBuffer.poll()) {
+            try {
+                persistToRedis(buffered);
+            } catch (RuntimeException redisStillDown) {
+                localBuffer.addFirst(buffered);
+                return;
+            }
         }
-        return polled;
+    }
+
+    private void bufferLocally(FallbackEnvelope envelope, RuntimeException cause) {
+        enqueueFailed.increment();
+        if (localBuffer.size() >= LOCAL_BUFFER_LIMIT) {
+            logger.error("FALLBACK_LOST - Redis indisponível e buffer local cheio ({}); evento descartado: {}",
+                    LOCAL_BUFFER_LIMIT, envelope.event(), cause);
+            return;
+        }
+        logger.warn("FALLBACK_BUFFERED - Redis indisponível, retendo evento em memória: {}", envelope.event());
+        localBuffer.offer(envelope);
     }
 
     private void deadLetter(FallbackEnvelope envelope, String reason) {

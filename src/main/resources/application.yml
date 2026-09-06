@@ -22,6 +22,15 @@ app:
       retention: 24h
       # Eventos retidos na DLQ; os mais antigos são descartados ao exceder.
       dlq-max-size: 10000
+      drain:
+        # Eventos retirados da fila por ciclo (a cada 10s).
+        max-per-cycle: 200
+        # Espera máxima pelas confirmações do Kafka antes de encerrar o ciclo.
+        await-timeout: 30s
+        # Ciclos consecutivos totalmente falhos que abrem o circuito.
+        trip-after-failed-cycles: 3
+        # Ciclos pulados enquanto o circuito está aberto (6 -> ~60s de pausa).
+        cooldown-cycles: 6
 
 spring:
   kafka:

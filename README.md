@@ -13,8 +13,13 @@ através de dispositivos sonoff ou compatíveis.
     * `max-attempts` (default 10): reenvios por evento antes da dead-letter queue
     * `retention` (default 24h): TTL da key da fila e idade máxima de um evento desde a 1ª falha
     * `dlq-max-size` (default 10000): teto da dead-letter queue `home-assistant-events:dlq`
+* O drain aguarda as confirmações do Kafka de cada lote (backpressure) e abre um circuito
+  após `app.redis.fallback.drain.trip-after-failed-cycles` (default 3) ciclos seguidos
+  totalmente falhos, pulando `cooldown-cycles` (default 6) ciclos antes de retomar.
+  Se o Redis estiver indisponível na devolução de um evento, ele é retido em memória
+  (até 1000) e reinserido quando o Redis volta.
 * Métricas expostas via Actuator/Micrometer: `fallback.enqueued`, `fallback.dead_letter`,
-  `fallback.queue.depth`, `fallback.dlq.depth`
+  `fallback.enqueue_failed`, `fallback.queue.depth`, `fallback.dlq.depth`, `fallback.local_buffer.depth`
 
 **Método de uso:**
 

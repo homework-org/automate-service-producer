@@ -13,8 +13,11 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
@@ -111,5 +114,34 @@ class RedisServiceTest {
         when(retryQueue.poll()).thenReturn(null);
 
         assertThat(redisService.pollForRetry()).isNull();
+    }
+
+    @Test
+    void pollForRetryReturnsNullInsteadOfThrowingWhenRedisIsUnavailable() {
+        when(retryQueue.poll()).thenThrow(new RuntimeException("connection refused"));
+
+        assertThat(redisService.pollForRetry()).isNull();
+    }
+
+    @Test
+    void doesNotThrowAndCountsAFailureWhenTheRedisWriteFails() {
+        doThrow(new RuntimeException("connection refused")).when(retryQueue).offer(any());
+
+        assertThatCode(() -> redisService.enqueueForRetry(FallbackEnvelope.firstFailure(event)))
+                .doesNotThrowAnyException();
+
+        assertThat(meterRegistry.counter("fallback.enqueue_failed").count()).isEqualTo(1.0);
+        assertThat(meterRegistry.counter("fallback.enqueued").count()).isEqualTo(0.0);
+    }
+
+    @Test
+    void reinsertsLocallyBufferedEventsOnTheNextEnqueue() {
+        doThrow(new RuntimeException("down")).doReturn(true).when(retryQueue).offer(any());
+
+        redisService.enqueueForRetry(FallbackEnvelope.firstFailure(event)); // offer #1 throws -> buffered
+        redisService.enqueueForRetry(FallbackEnvelope.firstFailure(event)); // flush buffered (#2) + persist new (#3)
+
+        verify(retryQueue, times(3)).offer(any());
+        assertThat(meterRegistry.counter("fallback.enqueued").count()).isEqualTo(2.0);
     }
 }

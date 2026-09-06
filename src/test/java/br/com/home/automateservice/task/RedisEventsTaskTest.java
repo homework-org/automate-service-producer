@@ -1,17 +1,21 @@
 package br.com.home.automateservice.task;
 
+import br.com.home.automateservice.config.DrainProperties;
 import br.com.home.automateservice.dto.HomeAssistantEvent;
 import br.com.home.automateservice.service.FallbackEnvelope;
 import br.com.home.automateservice.service.HomeAssistantLoggingService;
+import br.com.home.automateservice.service.PublishOutcome;
 import br.com.home.automateservice.service.RedisService;
+import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.InOrder;
-import org.mockito.InjectMocks;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.concurrent.CompletableFuture;
 
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.Mockito.inOrder;
@@ -24,23 +28,27 @@ import static org.mockito.Mockito.when;
 @ExtendWith(MockitoExtension.class)
 class RedisEventsTaskTest {
 
-    /** Mirrors the private {@code RedisEventsTask.MAX_PER_CYCLE}. */
-    private static final int MAX_PER_CYCLE = 200;
-
     @Mock
     private RedisService redisService;
 
     @Mock
     private HomeAssistantLoggingService loggingService;
 
-    @InjectMocks
     private RedisEventsTask task;
+
+    private static final DrainProperties DRAIN = new DrainProperties(200, Duration.ofSeconds(5), 3, 6);
+
+    @BeforeEach
+    void setUp() {
+        task = new RedisEventsTask(redisService, loggingService, DRAIN);
+    }
 
     @Test
     void drainsEveryQueuedEventInOrderThenStopsWhenQueueIsEmpty() {
         FallbackEnvelope first = envelope("1");
         FallbackEnvelope second = envelope("2");
         when(redisService.pollForRetry()).thenReturn(first, second, null);
+        when(loggingService.retry(any())).thenReturn(published());
 
         task.drainFallbackQueue();
 
@@ -61,12 +69,83 @@ class RedisEventsTaskTest {
 
     @Test
     void stopsAtMaxPerCycleEvenWhenTheQueueStillHasEvents() {
+        task = new RedisEventsTask(redisService, loggingService, new DrainProperties(5, Duration.ofSeconds(5), 3, 6));
         when(redisService.pollForRetry()).thenReturn(envelope("x"));
+        when(loggingService.retry(any())).thenReturn(published());
 
         task.drainFallbackQueue();
 
-        verify(redisService, times(MAX_PER_CYCLE)).pollForRetry();
-        verify(loggingService, times(MAX_PER_CYCLE)).retry(any());
+        verify(redisService, times(5)).pollForRetry();
+        verify(loggingService, times(5)).retry(any());
+    }
+
+    @Test
+    void awaitsTheBatchOutcomesBeforeReturning() {
+        CompletableFuture<PublishOutcome> pending = new CompletableFuture<>();
+        when(redisService.pollForRetry()).thenReturn(envelope("1")).thenReturn(null);
+        when(loggingService.retry(any())).thenReturn(pending);
+        pending.complete(PublishOutcome.PUBLISHED); // already resolved: allOf().get() returns immediately
+
+        task.drainFallbackQueue();
+
+        verify(loggingService).retry(any());
+    }
+
+    @Test
+    void opensTheCircuitAfterConsecutiveFullyFailedCyclesThenResumesAfterCooldown() {
+        when(redisService.pollForRetry()).thenReturn(
+                envelope("a"), null,   // cycle 1 -> full fail, streak 1
+                envelope("b"), null,   // cycle 2 -> full fail, streak 2
+                envelope("c"), null,   // cycle 3 -> full fail, trips (cooldown = 6)
+                envelope("d"), null);  // consumed only after cooldown elapses
+        when(loggingService.retry(any())).thenReturn(fellBack());
+
+        task.drainFallbackQueue();
+        task.drainFallbackQueue();
+        task.drainFallbackQueue();
+        verify(loggingService, times(3)).retry(any());
+        verify(redisService, times(6)).pollForRetry();
+
+        for (int i = 0; i < 6; i++) {
+            task.drainFallbackQueue(); // circuit open: skipped, no polling
+        }
+        verify(loggingService, times(3)).retry(any());
+        verify(redisService, times(6)).pollForRetry();
+
+        task.drainFallbackQueue(); // cooldown elapsed
+        verify(loggingService, times(4)).retry(any());
+        verify(redisService, times(8)).pollForRetry();
+    }
+
+    @Test
+    void aPartiallySuccessfulCycleResetsTheFailureStreakAndKeepsTheCircuitClosed() {
+        when(redisService.pollForRetry()).thenReturn(
+                envelope("1"), null,
+                envelope("2"), null,
+                envelope("3"), null,
+                envelope("4"), null,
+                envelope("5"), null);
+        when(loggingService.retry(any())).thenReturn(
+                fellBack(),    // cycle 1 -> streak 1
+                fellBack(),    // cycle 2 -> streak 2
+                published(),   // cycle 3 -> streak back to 0
+                fellBack(),    // cycle 4 -> streak 1
+                fellBack());   // cycle 5 -> streak 2, never trips
+
+        for (int i = 0; i < 5; i++) {
+            task.drainFallbackQueue();
+        }
+
+        verify(loggingService, times(5)).retry(any());
+        verify(redisService, times(10)).pollForRetry(); // 2 per cycle, nothing skipped
+    }
+
+    private static CompletableFuture<PublishOutcome> published() {
+        return CompletableFuture.completedFuture(PublishOutcome.PUBLISHED);
+    }
+
+    private static CompletableFuture<PublishOutcome> fellBack() {
+        return CompletableFuture.completedFuture(PublishOutcome.FELL_BACK);
     }
 
     private static FallbackEnvelope envelope(String id) {
