@@ -9,11 +9,14 @@ logging:
 server:
   port: 8080
 
+app:
+  kafka:
+    topic: automate-events-prod
+
 spring:
   kafka:
     bootstrap-servers: kafka-bootstrap.home.lab:9092, 192.168.1.211:9092
     properties[spring.kafka.bootstrap-servers]: kafka-bootstrap.home.lab:9092, 192.168.1.211:9092
-    topic: automate-events-prod
 
     producer:
       compression-type: lz4

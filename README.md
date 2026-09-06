@@ -7,7 +7,14 @@ através de dispositivos sonoff ou compatíveis.
 * Desenvolvido em Spring sob o java 21
 * Depende de uma infraestrutura com Redis, Kafka e MongoDB já operando
 * Os eventos são alimentados em um tópico no Kafka para posteriormente serem consumidos.
-* Caso o evento não possa ser enviado ao Kafka, será salvo no redis em uma fila com TTL de 24h
+* Caso o evento não possa ser enviado ao Kafka, ele é enfileirado no Redis (fila `home-assistant-events`)
+  e reenviado em lote pelo `RedisEventsTask` a cada 10s. A fila é limitada por `app.redis.fallback`:
+    * `max-queue-size` (default 100000): teto da fila; ao atingir, novos eventos vão para a dead-letter queue
+    * `max-attempts` (default 10): reenvios por evento antes da dead-letter queue
+    * `retention` (default 24h): TTL da key da fila e idade máxima de um evento desde a 1ª falha
+    * `dlq-max-size` (default 10000): teto da dead-letter queue `home-assistant-events:dlq`
+* Métricas expostas via Actuator/Micrometer: `fallback.enqueued`, `fallback.dead_letter`,
+  `fallback.queue.depth`, `fallback.dlq.depth`
 
 **Método de uso:**
 

@@ -1,6 +1,6 @@
 package br.com.home.automateservice.service;
 
-import br.com.home.automateservice.config.ServiceConfig;
+import br.com.home.automateservice.config.KafkaProperties;
 import br.com.home.automateservice.dto.HomeAssistantAvroEvent;
 import br.com.home.automateservice.dto.HomeAssistantEvent;
 import br.com.home.automateservice.dto.HomeAssistantEventMapper;
@@ -15,33 +15,27 @@ import java.util.concurrent.CompletableFuture;
 
 @Service
 public class KafkaService {
-    private static final Logger logger = LoggerFactory.getLogger(HomeAssistantLoggingService.class);
+    private static final Logger logger = LoggerFactory.getLogger(KafkaService.class);
 
     private final KafkaTemplate<String, Object> template;
     private final HomeAssistantEventMapper homeAssistantEventMapper;
 
     private final String topic;
 
-    public KafkaService(ServiceConfig serviceConfig, KafkaTemplate<String, Object> template, HomeAssistantEventMapper homeAssistantEventMapper) {
+    public KafkaService(KafkaProperties kafkaProperties, KafkaTemplate<String, Object> template, HomeAssistantEventMapper homeAssistantEventMapper) {
         this.template = template;
-
-        topic = serviceConfig.getKafkaConfig().getTopic();
+        this.topic = kafkaProperties.topic();
         this.homeAssistantEventMapper = homeAssistantEventMapper;
     }
 
-    public void pushEvent(HomeAssistantEvent homeAssistantEvent) throws RuntimeException {
+    /**
+     * Envia o evento ao Kafka de forma assíncrona. O {@link CompletableFuture} retornado
+     * completa com sucesso quando o broker confirma o envio (acks=all) e completa
+     * excepcionalmente em caso de falha - cabe ao chamador tratar o fallback.
+     */
+    public CompletableFuture<SendResult<String, Object>> send(HomeAssistantEvent homeAssistantEvent) {
         HomeAssistantAvroEvent homeAssistantAvroEvent = homeAssistantEventMapper.toHomeAssistantAvroEvent(homeAssistantEvent);
-
-        CompletableFuture<SendResult<String, Object>> future = template.send(topic, homeAssistantAvroEvent);
-
-        future.whenComplete((result, ex) -> {
-            if (ex == null) {
-                logger.info("Sent event [{}] with offset [{}] to [{}]", homeAssistantEvent,
-                        result.getRecordMetadata().offset(), topic);
-            } else {
-                throw new RuntimeException(String.format("Unable to send event [%s] to %s", homeAssistantEvent, topic));
-            }
-        });
+        return template.send(topic, homeAssistantAvroEvent);
     }
 
     @PreDestroy

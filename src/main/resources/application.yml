@@ -9,11 +9,24 @@ logging:
 server:
   port: 8080
 
+app:
+  kafka:
+    topic: automate-events-dev
+  redis:
+    fallback:
+      # Teto da fila de retry; ao atingir, novos eventos vão direto para a DLQ (home-assistant-events:dlq).
+      max-queue-size: 100000
+      # Reenvios por evento antes de movê-lo para a DLQ.
+      max-attempts: 10
+      # TTL da key da fila e idade máxima de um evento contada desde a 1ª falha.
+      retention: 24h
+      # Eventos retidos na DLQ; os mais antigos são descartados ao exceder.
+      dlq-max-size: 10000
+
 spring:
   kafka:
     bootstrap-servers: kafka-bootstrap.home.lab:9092, 192.168.1.211:9092
     properties[spring.kafka.bootstrap-servers]: kafka-bootstrap.home.lab:9092, 192.168.1.211:9092
-    topic: automate-events-dev
 
     producer:
       compression-type: lz4
@@ -34,6 +47,3 @@ spring:
   redis:
     redisson:
       file: classpath:redisson.yml
-
-  main:
-    allow-bean-definition-overriding: true

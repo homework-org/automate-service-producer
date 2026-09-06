@@ -3,7 +3,6 @@ plugins {
     id 'org.springframework.boot' version '3.4.1'
     id 'io.spring.dependency-management' version '1.1.6'
     id 'com.bmuschko.docker-spring-boot-application' version '9.4.0'
-    id 'com.github.davidmc24.gradle.plugin.avro' version '1.9.1'
 }
 
 group = 'br.com.home'
@@ -31,7 +30,6 @@ dependencies {
     implementation libs.org.springframework.boot.spring.boot.starter.web
     implementation libs.org.springframework.boot.spring.boot.starter.actuator
     implementation libs.org.springframework.kafka.spring.kafka
-    implementation libs.org.apache.kafka.kafka.streams
     implementation libs.com.fasterxml.jackson.datatype.jackson.datatype.jsr310
 
     implementation 'org.springframework.boot:spring-boot-starter-data-redis'
@@ -60,10 +58,11 @@ tasks.named('test') {
 
 docker {
     springBootApplication {
-        baseImage = 'openjdk:21'
+        baseImage = 'eclipse-temurin:21'
         ports = [8080]
         images = ['registry.home.lab:5000/automate-service-producer']
-        jvmArgs = ['-Dspring.profiles.active=prod', '-Xmx256m']
+        jvmArgs = ['-Xmx512m']
+        mainClassName = 'br.com.home.automateservice.AutomateServiceProducerApplication'
     }
 }
 
@@ -71,17 +70,10 @@ import com.bmuschko.gradle.docker.tasks.container.DockerCreateContainer
 import com.github.dockerjava.api.model.RestartPolicy
 
 task createContainer(type: DockerCreateContainer) {
-    dependsOn
+    dependsOn build
     containerName = "automate-service-producer"
     targetImageId dockerBuildImage.getImageId()
     hostConfig.portBindings = ['8080:8080']
     hostConfig.autoRemove = false
     hostConfig.restartPolicy = RestartPolicy.alwaysRestart().toString()
-}
-
-import com.github.davidmc24.gradle.plugin.avro.GenerateAvroJavaTask
-
-def generateAvro = tasks.register("generateAvro", GenerateAvroJavaTask) {
-    source("src/main/resources/avro")
-    outputDir = file("src/main/java")
 }
