@@ -6,7 +6,8 @@ import io.micrometer.core.instrument.Gauge;
 import io.micrometer.core.instrument.MeterRegistry;
 import org.redisson.api.RQueue;
 import org.redisson.api.RedissonClient;
-import org.redisson.codec.JsonJacksonCodec;
+import org.redisson.client.codec.Codec;
+import org.redisson.codec.TypedJsonJacksonCodec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -45,7 +46,10 @@ public class RedisService {
     private final Counter enqueueFailed;
 
     public RedisService(RedissonClient redissonClient, RedisFallbackProperties properties, MeterRegistry meterRegistry) {
-        JsonJacksonCodec codec = new JsonJacksonCodec();
+        // Codec com o tipo fixado em FallbackEnvelope: o JSON não carrega o nome da
+        // classe (nada de @JsonTypeInfo/@class), evitando o vetor de desserialização
+        // polimórfica. Serve para as duas filas, ambas de FallbackEnvelope.
+        Codec codec = new TypedJsonJacksonCodec(FallbackEnvelope.class);
         this.retryQueue = redissonClient.getQueue(RETRY_QUEUE_NAME, codec);
         this.deadLetterQueue = redissonClient.getQueue(DEAD_LETTER_QUEUE_NAME, codec);
         this.properties = properties;

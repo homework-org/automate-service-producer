@@ -14,6 +14,10 @@ singleServerConfig:
   connectionPoolSize: 64
   database: 0
   dnsMonitoringInterval: 5000
+  # O EqualJitterDelay padrão do Redisson 3.50.0 estoura long na 57ª tentativa de
+  # reconexão e mata o watchdog: após uma queda longa do Redis o pool fica com canais
+  # fechados para sempre ("Unable to write command into connection"). Corrigido no 4.1.0.
+  reconnectionDelay: !<org.redisson.config.DecorrelatedJitterDelay> {baseDelay: PT0.1S, maxDelay: PT10S}
 threads: 0
 nettyThreads: 0
 codec: !<org.redisson.codec.JsonJacksonCodec> {}

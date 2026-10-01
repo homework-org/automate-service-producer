@@ -49,7 +49,7 @@ public class HomeAssistantLoggingService {
                     fallBack(envelope);
                     return PublishOutcome.FELL_BACK;
                 }
-                logger.debug("KAFKA_EVENT_SENT - evento [{}] offset [{}] topic [{}]", event,
+                logger.info("KAFKA_EVENT_SENT - evento [{}] offset [{}] topic [{}]", event,
                         result.getRecordMetadata().offset(), result.getRecordMetadata().topic());
                 return PublishOutcome.PUBLISHED;
             });
