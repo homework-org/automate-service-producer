@@ -26,6 +26,11 @@ import java.util.concurrent.TimeoutException;
  * Se {@code trip-after-failed-cycles} ciclos seguidos falharem por inteiro, abre um
  * circuito que pula os próximos {@code cooldown-cycles} ciclos, evitando o loop
  * quente (e a enxurrada de logs) durante uma indisponibilidade prolongada do Kafka.
+ * Quando o Kafka se recupera - o primeiro ciclo sem nenhuma devolução depois de um
+ * ciclo totalmente falho - devolve a DLQ à fila de retry em lotes de {@code dlq-batch-size},
+ * um por ciclo saudável, até esvaziá-la (ver {@link RedisService#reprocessDeadLetters(int)}).
+ * Um ciclo totalmente falho rearma o gatilho. Eventos já na DLQ quando o processo sobe só
+ * voltam após a próxima recuperação ou pelo endpoint manual.
  * Os campos de estado são acessados só pela thread do agendador, que nunca sobrepõe
  * execuções do mesmo método {@code @Scheduled}.
  */
@@ -40,6 +45,8 @@ public class RedisEventsTask {
 
     private int consecutiveFailedCycles;
     private int cooldownRemaining;
+    /** Houve falha total desde a última devolução da DLQ: o próximo ciclo saudável a reprocessa. */
+    private boolean dlqReprocessPending;
 
     public RedisEventsTask(RedisService redisService, HomeAssistantLoggingService homeAssistantLoggingService,
                            DrainProperties drainProperties) {
@@ -68,6 +75,7 @@ public class RedisEventsTask {
 
         if (inFlight.isEmpty()) {
             consecutiveFailedCycles = 0;
+            reprocessDeadLettersIfRecovered();
             return;
         }
 
@@ -76,6 +84,7 @@ public class RedisEventsTask {
 
         if (fellBack == inFlight.size()) {
             consecutiveFailedCycles++;
+            dlqReprocessPending = true;
             logger.warn("FALLBACK_DRAIN - ciclo falhou por inteiro ({} eventos devolvidos), sequência={}",
                     fellBack, consecutiveFailedCycles);
             if (consecutiveFailedCycles >= drainProperties.tripAfterFailedCycles()) {
@@ -86,7 +95,21 @@ public class RedisEventsTask {
         } else {
             consecutiveFailedCycles = 0;
             logger.info("FALLBACK_DRAIN - {} reenviados, {} devolvidos à fila", published, fellBack);
+            if (fellBack == 0) {
+                reprocessDeadLettersIfRecovered();
+            }
         }
+    }
+
+    private void reprocessDeadLettersIfRecovered() {
+        if (!dlqReprocessPending || !drainProperties.autoReprocessDlq()) {
+            return;
+        }
+        int moved = redisService.reprocessDeadLetters(drainProperties.dlqBatchSize());
+        // Lote cheio: pode haver mais na DLQ, segue no próximo ciclo saudável.
+        dlqReprocessPending = moved >= drainProperties.dlqBatchSize();
+        logger.info("FALLBACK_DRAIN - Kafka recuperado, {} evento(s) devolvido(s) da DLQ{}", moved,
+                dlqReprocessPending ? " (há mais, continua no próximo ciclo)" : "");
     }
 
     private int awaitOutcomes(List<CompletableFuture<PublishOutcome>> inFlight) {

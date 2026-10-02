@@ -44,6 +44,7 @@ public class RedisService {
     private final Counter enqueued;
     private final Counter deadLettered;
     private final Counter enqueueFailed;
+    private final Counter reprocessed;
 
     public RedisService(RedissonClient redissonClient, RedisFallbackProperties properties, MeterRegistry meterRegistry) {
         // Codec com o tipo fixado em FallbackEnvelope: o JSON não carrega o nome da
@@ -57,6 +58,7 @@ public class RedisService {
         this.enqueued = meterRegistry.counter("fallback.enqueued");
         this.deadLettered = meterRegistry.counter("fallback.dead_letter");
         this.enqueueFailed = meterRegistry.counter("fallback.enqueue_failed");
+        this.reprocessed = meterRegistry.counter("fallback.dlq.reprocessed");
         Gauge.builder("fallback.queue.depth", retryQueue, RQueue::size)
                 .description("Eventos aguardando reenvio ao Kafka na fila de fallback do Redis")
                 .register(meterRegistry);
@@ -104,6 +106,41 @@ public class RedisService {
             logger.warn("POLL_FAILED - Redis indisponível na drenagem: {}", redisDown.getMessage());
             return null;
         }
+    }
+
+    /**
+     * Devolve até {@code limit} eventos da DLQ (mais antigos primeiro) à fila de retry,
+     * com tentativas zeradas e retenção reiniciada - sem isso eles voltariam direto
+     * para a DLQ. Para quando a DLQ esvazia, o {@code limit} é atingido ou a fila de
+     * retry enche (os restantes ficam na DLQ). Cada evento é copiado para a fila de
+     * retry <em>antes</em> de sair da DLQ, então uma falha do Redis no meio não perde
+     * eventos (no pior caso um evento fica duplicado, e o Kafka já é at-least-once).
+     * Se o Redis estiver indisponível, devolve o que conseguiu mover até então.
+     *
+     * @return quantos eventos foram movidos
+     */
+    public synchronized int reprocessDeadLetters(int limit) {
+        int moved = 0;
+        try {
+            while (moved < limit && retryQueue.size() < properties.maxQueueSize()) {
+                FallbackEnvelope next = deadLetterQueue.peek();
+                if (next == null) {
+                    break;
+                }
+                retryQueue.offer(next.reset());
+                deadLetterQueue.poll();
+                moved++;
+            }
+            if (moved > 0) {
+                retryQueue.expire(properties.retention());
+                reprocessed.increment(moved);
+                logger.info("DLQ_REPROCESSED - {} evento(s) devolvido(s) da DLQ à fila de retry", moved);
+            }
+        } catch (RuntimeException redisDown) {
+            logger.warn("DLQ_REPROCESS_FAILED - Redis indisponível após mover {} evento(s): {}",
+                    moved, redisDown.getMessage());
+        }
+        return moved;
     }
 
     private void persist(FallbackEnvelope incremented) {

@@ -26,6 +26,11 @@ public record FallbackEnvelope(HomeAssistantEvent event, int attempts, long firs
         return new FallbackEnvelope(event, attempts + 1, firstFailureEpochMs);
     }
 
+    /** Cópia "nova" para reprocessar um evento da DLQ: zera tentativas e reinicia o relógio da retenção. */
+    public FallbackEnvelope reset() {
+        return new FallbackEnvelope(event, 0, System.currentTimeMillis());
+    }
+
     /** {@code true} se a primeira falha ocorreu há mais que {@code retention}. */
     public boolean olderThan(Duration retention) {
         return System.currentTimeMillis() - firstFailureEpochMs > retention.toMillis();

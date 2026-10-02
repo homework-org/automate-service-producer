@@ -18,7 +18,9 @@ import java.time.LocalDateTime;
 import java.util.concurrent.CompletableFuture;
 
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.Mockito.inOrder;
+import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.verifyNoInteractions;
@@ -36,7 +38,7 @@ class RedisEventsTaskTest {
 
     private RedisEventsTask task;
 
-    private static final DrainProperties DRAIN = new DrainProperties(200, Duration.ofSeconds(5), 3, 6);
+    private static final DrainProperties DRAIN = new DrainProperties(200, Duration.ofSeconds(5), 3, 6, true, 2);
 
     @BeforeEach
     void setUp() {
@@ -69,7 +71,7 @@ class RedisEventsTaskTest {
 
     @Test
     void stopsAtMaxPerCycleEvenWhenTheQueueStillHasEvents() {
-        task = new RedisEventsTask(redisService, loggingService, new DrainProperties(5, Duration.ofSeconds(5), 3, 6));
+        task = new RedisEventsTask(redisService, loggingService, new DrainProperties(5, Duration.ofSeconds(5), 3, 6, true, 2));
         when(redisService.pollForRetry()).thenReturn(envelope("x"));
         when(loggingService.retry(any())).thenReturn(published());
 
@@ -138,6 +140,87 @@ class RedisEventsTaskTest {
 
         verify(loggingService, times(5)).retry(any());
         verify(redisService, times(10)).pollForRetry(); // 2 per cycle, nothing skipped
+    }
+
+    @Test
+    void reprocessesTheDlqOnTheFirstHealthyCycleAfterAFullyFailedOne() {
+        when(redisService.pollForRetry()).thenReturn(envelope("a"), null, envelope("b"), null);
+        when(loggingService.retry(any())).thenReturn(fellBack(), published());
+        when(redisService.reprocessDeadLetters(2)).thenReturn(1);
+
+        task.drainFallbackQueue(); // full failure arms the trigger
+        verify(redisService, never()).reprocessDeadLetters(anyInt());
+
+        task.drainFallbackQueue(); // healthy -> Kafka recovered
+        verify(redisService).reprocessDeadLetters(2);
+
+        task.drainFallbackQueue(); // empty cycle, trigger already consumed (moved < batch)
+        verify(redisService, times(1)).reprocessDeadLetters(anyInt());
+    }
+
+    @Test
+    void neverReprocessesTheDlqWithoutAPriorFullFailure() {
+        when(redisService.pollForRetry()).thenReturn(envelope("a"), null);
+        when(loggingService.retry(any())).thenReturn(published());
+
+        task.drainFallbackQueue();
+        task.drainFallbackQueue();
+
+        verify(redisService, never()).reprocessDeadLetters(anyInt());
+    }
+
+    @Test
+    void aPartiallyFailedCycleDoesNotTriggerTheReprocessEvenWhenArmed() {
+        when(redisService.pollForRetry()).thenReturn(envelope("a"), null, envelope("b"), envelope("c"), null);
+        when(loggingService.retry(any())).thenReturn(fellBack(), published(), fellBack());
+
+        task.drainFallbackQueue(); // full failure -> armed
+        task.drainFallbackQueue(); // 1 published + 1 fell back -> partial, no trigger
+
+        verify(redisService, never()).reprocessDeadLetters(anyInt());
+    }
+
+    @Test
+    void keepsReprocessingBatchByBatchWhileTheDlqReturnsFullBatches() {
+        when(redisService.pollForRetry()).thenReturn(envelope("a"), null, null, null, null);
+        when(loggingService.retry(any())).thenReturn(fellBack());
+        when(redisService.reprocessDeadLetters(2)).thenReturn(2, 2, 1);
+
+        task.drainFallbackQueue(); // arm
+        task.drainFallbackQueue(); // empty/healthy -> 2 moved (full batch)
+        task.drainFallbackQueue(); // empty/healthy -> 2 moved (full batch)
+        task.drainFallbackQueue(); // empty/healthy -> 1 moved (done)
+        task.drainFallbackQueue(); // nothing more
+
+        verify(redisService, times(3)).reprocessDeadLetters(2);
+    }
+
+    @Test
+    void aNewFullFailureRearmsTheTriggerAfterTheDlqWasDrained() {
+        when(redisService.pollForRetry()).thenReturn(envelope("a"), null, null, envelope("b"), null, null);
+        when(loggingService.retry(any())).thenReturn(fellBack(), fellBack());
+        when(redisService.reprocessDeadLetters(2)).thenReturn(0);
+
+        task.drainFallbackQueue(); // fail -> armed
+        task.drainFallbackQueue(); // empty -> reprocess (0), disarmed
+        task.drainFallbackQueue(); // empty -> no reprocess
+        task.drainFallbackQueue(); // fail -> armed again
+        task.drainFallbackQueue(); // empty -> reprocess
+
+        verify(redisService, times(2)).reprocessDeadLetters(2);
+    }
+
+    @Test
+    void doesNotReprocessWhenAutoReprocessIsDisabled() {
+        task = new RedisEventsTask(redisService, loggingService,
+                new DrainProperties(200, Duration.ofSeconds(5), 3, 6, false, 2));
+        when(redisService.pollForRetry()).thenReturn(envelope("a"), null, null);
+        when(loggingService.retry(any())).thenReturn(fellBack());
+
+        task.drainFallbackQueue();
+        task.drainFallbackQueue();
+
+        verify(redisService, never()).reprocessDeadLetters(anyInt());
     }
 
     private static CompletableFuture<PublishOutcome> published() {

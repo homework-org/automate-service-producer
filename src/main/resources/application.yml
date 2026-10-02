@@ -31,6 +31,10 @@ app:
         trip-after-failed-cycles: 3
         # Ciclos pulados enquanto o circuito está aberto (6 -> ~60s de pausa).
         cooldown-cycles: 6
+        # Devolve a DLQ à fila de retry quando o Kafka se recupera (1º ciclo saudável após um ciclo totalmente falho).
+        auto-reprocess-dlq: true
+        # Eventos devolvidos da DLQ por ciclo saudável, até esvaziá-la.
+        dlq-batch-size: 200
 
 spring:
   kafka:

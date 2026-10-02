@@ -12,11 +12,15 @@ import java.time.Duration;
  * @param awaitTimeout          espera máxima pelas confirmações do Kafka antes de encerrar o ciclo
  * @param tripAfterFailedCycles ciclos consecutivos totalmente falhos que abrem o circuito
  * @param cooldownCycles        ciclos pulados enquanto o circuito está aberto
+ * @param autoReprocessDlq      se {@code true}, devolve a DLQ à fila quando o Kafka se recupera de uma falha
+ * @param dlqBatchSize          eventos devolvidos da DLQ por ciclo saudável até esvaziá-la
  */
 @ConfigurationProperties(prefix = "app.redis.fallback.drain")
 public record DrainProperties(
         @DefaultValue("200") int maxPerCycle,
         @DefaultValue("30s") Duration awaitTimeout,
         @DefaultValue("3") int tripAfterFailedCycles,
-        @DefaultValue("6") int cooldownCycles) {
+        @DefaultValue("6") int cooldownCycles,
+        @DefaultValue("true") boolean autoReprocessDlq,
+        @DefaultValue("200") int dlqBatchSize) {
 }

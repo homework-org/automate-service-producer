@@ -13,6 +13,14 @@ através de dispositivos sonoff ou compatíveis.
     * `max-attempts` (default 10): reenvios por evento antes da dead-letter queue
     * `retention` (default 24h): TTL da key da fila e idade máxima de um evento desde a 1ª falha
     * `dlq-max-size` (default 10000): teto da dead-letter queue `home-assistant-events:dlq`
+* A DLQ é devolvida automaticamente quando o Kafka se recupera: o primeiro ciclo de drain sem
+  devoluções depois de um ciclo totalmente falho move `dlq-batch-size` (default 200) eventos da DLQ
+  para a fila de retry por ciclo saudável, até esvaziá-la (`app.redis.fallback.drain.auto-reprocess-dlq`).
+  Não dispara com o Kafka fora (evita o loop evento→fila→DLQ), e eventos que já estavam na DLQ quando o
+  processo subiu só voltam na próxima recuperação ou pelo endpoint manual:
+  `POST /admin/dlq/reprocess?limit=1000` (default 1000, máx. 10000) devolve os
+  eventos mais antigos da DLQ à fila de retry com tentativas zeradas; o drain normal os reenvia.
+  Retorna `{"moved": N}`; métrica `fallback.dlq.reprocessed`. O endpoint não tem autenticação.
 * O drain aguarda as confirmações do Kafka de cada lote (backpressure) e abre um circuito
   após `app.redis.fallback.drain.trip-after-failed-cycles` (default 3) ciclos seguidos
   totalmente falhos, pulando `cooldown-cycles` (default 6) ciclos antes de retomar.

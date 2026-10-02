@@ -144,4 +144,50 @@ class RedisServiceTest {
         verify(retryQueue, times(3)).offer(any());
         assertThat(meterRegistry.counter("fallback.enqueued").count()).isEqualTo(2.0);
     }
+
+    @Test
+    void reprocessMovesDeadLettersToTheRetryQueueWithResetAttemptsAndKeepsOrder() {
+        FallbackEnvelope dead = new FallbackEnvelope(event, 11, 1L);
+        when(deadLetterQueue.peek()).thenReturn(dead, dead, (FallbackEnvelope) null);
+        when(retryQueue.size()).thenReturn(0);
+
+        int moved = redisService.reprocessDeadLetters(10);
+
+        assertThat(moved).isEqualTo(2);
+        ArgumentCaptor<FallbackEnvelope> captor = ArgumentCaptor.forClass(FallbackEnvelope.class);
+        verify(retryQueue, times(2)).offer(captor.capture());
+        assertThat(captor.getValue().attempts()).isZero();
+        assertThat(captor.getValue().firstFailureEpochMs()).isGreaterThan(1L);
+        verify(deadLetterQueue, times(2)).poll();
+        verify(retryQueue).expire(Duration.ofHours(24));
+        assertThat(meterRegistry.counter("fallback.dlq.reprocessed").count()).isEqualTo(2.0);
+    }
+
+    @Test
+    void reprocessHonoursTheLimit() {
+        FallbackEnvelope dead = new FallbackEnvelope(event, 11, 1L);
+        when(deadLetterQueue.peek()).thenReturn(dead);
+
+        assertThat(redisService.reprocessDeadLetters(3)).isEqualTo(3);
+        verify(retryQueue, times(3)).offer(any());
+    }
+
+    @Test
+    void reprocessStopsWhenTheRetryQueueIsFullLeavingTheRestInTheDlq() {
+        when(deadLetterQueue.peek()).thenReturn(new FallbackEnvelope(event, 11, 1L));
+        when(retryQueue.size()).thenReturn(5); // == maxQueueSize
+
+        assertThat(redisService.reprocessDeadLetters(10)).isZero();
+        verify(retryQueue, never()).offer(any());
+        verify(deadLetterQueue, never()).poll();
+    }
+
+    @Test
+    void reprocessDoesNotRemoveFromTheDlqWhenTheCopyToTheRetryQueueFails() {
+        when(deadLetterQueue.peek()).thenReturn(new FallbackEnvelope(event, 11, 1L));
+        doThrow(new RuntimeException("redis down")).when(retryQueue).offer(any());
+
+        assertThat(redisService.reprocessDeadLetters(10)).isZero();
+        verify(deadLetterQueue, never()).poll();
+    }
 }
